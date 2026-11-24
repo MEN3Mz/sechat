@@ -1,4 +1,5 @@
 // Part D: the same store interface as MemoryStore, but saved in MongoDB (via Mongoose).
+// Stores messages and users in MongoDB (Part D).
 import mongoose from 'mongoose';
 
 const userSchema = new mongoose.Schema({
