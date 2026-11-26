@@ -5,11 +5,12 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 import express from 'express';
-import { MemoryStore } from './delivery.js';
-import { Hub } from './hub.js';
-import { Metrics } from './metrics.js';
-import { httpRoutes } from './protocolHttp.js';
-import { attachWebSocket } from './protocolWs.js';
+import { MemoryStore } from './chat/repositories/memoryStore.js';
+import { Hub } from './chat/services/hub.js';
+import { Metrics } from './status/services/metrics.js';
+import { httpRoutes } from './chat/routes/protocolHttp.js';
+import { attachWebSocket } from './chat/routes/protocolWs.js';
+import { statusRoutes } from './status/routes/statusRoutes.js';
 
 const { values: args, positionals } = parseArgs({
   allowPositionals: true,
@@ -17,19 +18,6 @@ const { values: args, positionals } = parseArgs({
 });
 const port = Number(positionals[0] ?? 8000);
 const clientDir = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'client', 'dist');
-
-const STATS_PAGE = `<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
-<title>Server stats</title>
-<body style="font-family:sans-serif;max-width:480px;margin:2em auto">
-<h2>Server stats</h2><table id=t border=1 cellpadding=6 style="border-collapse:collapse"></table>
-<script>
-async function tick(){
-  const m = await (await fetch('/metrics')).json();
-  document.getElementById('t').innerHTML = Object.entries(m)
-    .map(([k,v]) => '<tr><td>'+k+'</td><td>'+JSON.stringify(v)+'</td></tr>').join('');
-}
-tick(); setInterval(tick, 1000);
-</script></body>`;
 
 // The addresses phones can type. A laptop may have several (Wi-Fi, VPN, virtual adapters).
 function lanAddresses() {
@@ -44,28 +32,37 @@ function lanAddresses() {
 
 async function main() {
   const metrics = new Metrics();
-  let store = new MemoryStore();
-  if (args.mongo) {
-    const { connectMongo } = await import('./mongoStore.js'); // only loaded when asked for
-    store = await connectMongo(args.mongo);
-  }
-  const hub = new Hub(store, metrics);
+  let messages = new MemoryStore();
+  let accounts;
 
+  if (args.mongo) {
+    const { default: mongoose } = await import('mongoose');
+    const { MongoMessageRepository } = await import('./chat/repositories/mongoMessageRepository.js');
+    const { UserRepository } = await import('./accounts/repositories/userRepository.js');
+    const { AccountService } = await import('./accounts/services/accountService.js');
+
+    await mongoose.connect(args.mongo, { serverSelectionTimeoutMS: 4000 });
+    messages = new MongoMessageRepository();
+    const users = new UserRepository();
+    await Promise.all([users.initialize(), messages.initialize()]);
+    accounts = new AccountService(users, messages);
+  }
+
+  const hub = new Hub(messages, metrics);
   const app = express();
   app.use(express.json());
   httpRoutes(app, hub); // /sse, /send, /ack (Protocol 2)
-  if (args.mongo) {
-    const { accountRoutes } = await import('./accounts.js');
-    accountRoutes(app, hub); // /register, /login, /history
+  if (accounts) {
+    const { accountRoutes } = await import('./accounts/routes/accountRoutes.js');
+    hub.verifyToken = (token) => accounts.verifyToken(token);
+    accountRoutes(app, accounts);
   }
-  app.get('/config', (req, res) => res.json({ accounts: hub.verifyToken !== null }));
-  app.get('/metrics', (req, res) => res.json(metrics.snapshot()));
-  app.get('/users', (req, res) => res.json(hub.users()));
-  app.get('/stats', (req, res) => res.type('html').send(STATS_PAGE));
+  statusRoutes(app, hub, metrics);
   app.use(express.static(clientDir)); // the built React app
 
   // Last: turn errors (for example a request with broken JSON) into a JSON reply.
   app.use((err, req, res, next) => {
+    if (res.headersSent) return next(err);
     const status = err.status ?? 500;
     if (status >= 500) console.error(err);
     res.status(status).json({ type: 'error', reason: status === 400 ? 'bad request body' : 'server error' });

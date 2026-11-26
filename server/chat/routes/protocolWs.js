@@ -1,5 +1,5 @@
 import { WebSocketServer } from 'ws';
-import { bindWebSocketController } from './controllers/websocketController.js';
+import { bindWebSocketController } from '../controllers/websocketController.js';
 
 export function attachWebSocket(server, hub) {
   // Reuse the HTTP server's port and accept WebSocket upgrades at /ws.

@@ -1,4 +1,4 @@
-import { BadRequest, Connection } from '../hub.js';
+import { BadRequest, Connection } from '../services/hub.js';
 
 const HEARTBEAT_MS = 30_000;
 

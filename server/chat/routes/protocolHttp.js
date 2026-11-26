@@ -1,4 +1,4 @@
-import { httpChatController } from './controllers/httpChatController.js';
+import { httpChatController } from '../controllers/httpChatController.js';
 
 export function httpRoutes(app, hub) {
   const controller = httpChatController(hub);

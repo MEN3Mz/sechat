@@ -1,5 +1,5 @@
 import { WebSocket } from 'ws';
-import { BadRequest, Connection } from '../hub.js';
+import { BadRequest, Connection } from '../services/hub.js';
 
 // Each socket gets its own authenticated connection state.
 function websocketController(hub, send) {
