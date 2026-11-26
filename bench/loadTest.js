@@ -3,7 +3,7 @@
 // Prints latency statistics and appends one line to results.csv.
 import { appendFileSync, existsSync } from 'node:fs';
 import { parseArgs } from 'node:util';
-import { decrypt, encrypt, makeKey } from '../client/src/crypt.js';
+import { decrypt, encrypt, generateConversationSecret, makeKey } from '../client/src/crypt.js';
 
 const { values: o } = parseArgs({
   options: {
@@ -18,14 +18,13 @@ const { values: o } = parseArgs({
 const N = Number(o.clients);
 const PER = Number(o.messages);
 const INTERVAL = Number(o.interval);
-const key = o.encrypt ? makeKey('benchmark') : null;
+const key = o.encrypt ? await makeKey(generateConversationSecret()) : null;
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 const post = (path, body) =>
   fetch(o.url + path, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
 
 const sentAt = new Map(); // message id -> time it was sent (all clients live in this one process)
-const latencies = []; // ms from "sent" to "arrived at the receiver"
-const wireBytes = { total: 0 };
+const latencies = []; // ms from preparing to send until the recipient can read the message
 
 // ---- two kinds of client, same shape: { name, send(to, id, body), close() } ----
 async function wsClient(name, onMsg) {
@@ -34,11 +33,10 @@ async function wsClient(name, onMsg) {
     socket.onopen = resolve;
     socket.onerror = () => reject(new Error('cannot connect to ' + o.url));
   });
-  socket.onmessage = (event) => {
+  socket.onmessage = async (event) => {
     const frame = JSON.parse(event.data);
-    if (frame.type === 'msg') {
+    if (frame.type === 'msg' && await onMsg(frame)) {
       socket.send(JSON.stringify({ type: 'ack', id: frame.id }));
-      onMsg(frame);
     }
   };
   socket.send(JSON.stringify({ type: 'join', user: name, token: '' }));
@@ -64,9 +62,8 @@ async function sseClient(name, onMsg) {
           const line = event.split('\n').find((l) => l.startsWith('data: '));
           if (!line) continue;
           const frame = JSON.parse(line.slice(6));
-          if (frame.type === 'msg') {
-            post('/ack', { user: name, id: frame.id });
-            onMsg(frame);
+          if (frame.type === 'msg' && await onMsg(frame)) {
+            await post('/ack', { user: name, id: frame.id });
           }
         }
       }
@@ -81,13 +78,20 @@ async function sseClient(name, onMsg) {
 // ---- run ----
 let received = 0;
 const expected = N * PER;
-const onMsg = (frame) => {
+const onMsg = async (frame) => {
   const t0 = sentAt.get(frame.id);
-  if (t0 === undefined) return;
+  if (t0 === undefined) return false;
+  try {
+    if (key) await decrypt(frame.body, key);
+  } catch (err) {
+    console.error(`Could not decrypt message ${frame.id}: ${err.message}`);
+    return false;
+  }
+  if (!sentAt.has(frame.id)) return false;
   sentAt.delete(frame.id); // count each message once
   latencies.push(performance.now() - t0);
   received++;
-  if (key) decrypt(frame.body, key);
+  return true;
 };
 
 const run = Date.now().toString(36);
@@ -105,9 +109,9 @@ await Promise.all(
     for (let n = 0; n < PER; n++) {
       const id = `${run}-${i}-${n}`;
       const text = `message ${n} from client ${i}`;
-      const body = key ? encrypt(text, key) : text;
       sentAt.set(id, performance.now());
-      client.send(to, id, body);
+      const body = key ? await encrypt(text, key) : text;
+      await client.send(to, id, body);
       await sleep(INTERVAL);
     }
   }),
