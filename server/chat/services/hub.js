@@ -1,6 +1,6 @@
 // The Hub: who is connected, and how a message gets from one person to another.
 
-export const USERNAME = /^[A-Za-z0-9_]{1,20}$/;
+import { USERNAME } from '../../shared/validation/username.js';
 const MAX_BODY = 2000;
 const MAX_ID = 64;
 
@@ -70,6 +70,9 @@ export class Hub {
   }
 
   acknowledge(user, id) {
+    if (typeof id !== 'string' || id.length === 0 || id.length > MAX_ID) {
+      throw new BadRequest('bad message id');
+    }
     return this.store.acknowledge(user, id);
   }
 
